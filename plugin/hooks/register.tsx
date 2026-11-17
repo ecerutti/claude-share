@@ -400,7 +400,7 @@ const NO_SERVER =
 // has `autoUpdate` on, which the Room's Updates setting turns on.
 
 const MARKETPLACE = 'claude-share'
-const MARKETPLACE_SOURCE = { source: 'github', repo: 'Paradigm-Study/claude-share' }
+const MARKETPLACE_SOURCE = { source: 'github', repo: 'ecerutti/claude-share' }
 const UPDATE_COMMAND = 'claude plugin marketplace update claude-share && claude plugin update shared-session@claude-share'
 let pluginVersion: string | undefined
 
@@ -451,7 +451,7 @@ async function noteLatest($: $, latest: unknown) {
 // at once, no restart. Off, the folder is no longer named and new sessions
 // run the installed copy again.
 const LIVE_SUBDIR = '.claude/shared-session/plugin'
-const RELEASE_URL = 'https://codeload.github.com/Paradigm-Study/claude-share/tar.gz/refs/heads/main'
+const RELEASE_URL = 'https://codeload.github.com/ecerutti/claude-share/tar.gz/refs/heads/main'
 const INSTALLED_ID = 'shared-session@claude-share'
 let updatingTo: string | null = null
 
