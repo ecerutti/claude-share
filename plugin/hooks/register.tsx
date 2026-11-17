@@ -73,7 +73,7 @@ import type { Face } from './look'
 import { attachmentsOf, delivered, neutralize, PEER_ID, rowsFromMessage, rowsToMarkdown, splitSpeaker, summarizeTool } from './rows'
 import type { Media, RoomImage, Row } from './rows'
 import { SERVER_URL } from './server'
-import { readTargets, realInside } from './paths'
+import { isWinPath, readTargets, realInside } from './paths'
 import {
   browserFamily,
   browserName,
@@ -2815,7 +2815,9 @@ async function closeSteps($: $, s: RoomScope, live: boolean, how: Exit, opts: Ex
   // Kept with its place: the window closes first, and fast (it reaches
   // nothing once its proxy is gone), begun before the place is saved.
   const closingWindow = win && !forGood ? killWindow($, win.profile, false, onPort).catch(() => {}) : null
-  // 2. The place.
+  // 2. The place. A live save being written goes first (`saveLivePlace`).
+  await liveWrite
+  liveSaved = { body: '', at: 0 }
   if (how === 'keep') {
     try {
       await writeRoomCheckpoint($, place, guest ? await joinedPlace($, room) : await hostingPlace($, room))
@@ -3575,6 +3577,35 @@ async function writeRoomCheckpoint($: $, key: string, value: RoomCheckpoint) {
     `umask 077\nset -e\nmkdir -p ${sq(dir)}\nchmod 700 ${sq(dir)}\ntmp=${sq(tmp)}\ntrap 'rm -f "$tmp"' 0\ncat > ${sq(tmp)} <<'${tag}'\n${body}\n${tag}\nchmod 600 ${sq(tmp)}\nmv ${sq(tmp)} ${sq(path)}\n`,
   )
   if (result.code !== 0) throw new Error('Could not write the private saved room checkpoint')
+}
+
+// The place saved while the room is live too, not only when the session
+// closes: a session ended without its close (Claude Desktop quit on Windows,
+// a crash, a machine that restarts) still finds it at its next start. Saved
+// when it changed, and every 10 minutes regardless (its time, for the keep).
+// A close waits for one being written (`closeSteps`), so a Stop or a Leave
+// never finds its place written again behind it.
+let liveWrite: Promise<void> | null = null
+let liveSaved = { body: '', at: 0 }
+function saveLivePlace($: $) {
+  if (liveWrite) return
+  liveWrite = (async () => {
+    const room = await read($, roomA),
+      mode = await read($, modeA)
+    if (!room || (mode !== 'host' && mode !== 'guest') || !scope.live || scope.key !== roomIdentity(room)) return
+    if (reclaiming || typeof closeMark === 'object' || (await read($, closingA))) return
+    const guest = mode === 'guest'
+    const value = guest ? await joinedPlace($, room) : await hostingPlace($, room)
+    const body = JSON.stringify({ ...value, at: 0 })
+    const now = await $.clock.now()
+    if (body === liveSaved.body && now - liveSaved.at < 10 * 60_000) return
+    await writeRoomCheckpoint($, `${guest ? JOINED_KEY : HOSTING_KEY}${await $.session.id()}`, value)
+    liveSaved = { body, at: now }
+  })()
+    .catch(error => $.ui.log(`Couldn't save the shared session while live: ${String((error as Error)?.message ?? error)}`))
+    .finally(() => {
+      liveWrite = null
+    })
 }
 
 async function deleteRoomCheckpoint($: $, key: string) {
@@ -5274,7 +5305,9 @@ async function readsInsideReally($: $, tool: string, input: Record<string, unkno
   if (!targets) return false
   if (!targets.length) return true
   // Paths have no newline (`readTargets`), so each is a line; one that hangs (a stalled mount) asks.
-  const { code, out } = await spawned($, ['/bin/sh', `${$.plugin.root}/relay/real.sh`, cwd, ...targets], undefined, 5_000)
+  // On Windows the project's folder goes as `C:/…` too, as its paths do (`readTargets`).
+  const base = isWinPath(cwd) ? cwd.replace(/\\/g, '/') : cwd
+  const { code, out } = await spawned($, ['/bin/sh', `${$.plugin.root}/relay/real.sh`, base, ...targets], undefined, 5_000)
   const [root, ...paths] = out.split('\n').slice(0, targets.length + 1)
   return code === 0 && root !== undefined && paths.length === targets.length && realInside(root, paths)
 }
@@ -11974,6 +12007,8 @@ export const register: Register = (on, options) => {
         void repinIfAllowed($).catch(() => {})
       }),
     )
+    // The room's place, saved while live (`saveLivePlace`).
+    everyTimers.push($.clock.every(30_000, () => saveLivePlace($)))
     // Invites teammates sent: a look every 10 s at the machine's shared copy.
     $.clock.after(2_000, () => void pollInvites($).catch(() => {}))
     everyTimers.push($.clock.every(10_000, () => void pollInvites($).catch(() => {})))

@@ -10,11 +10,18 @@
 // place in it, and a path climbing back out of one (`notes/../x`) goes on
 // from where the link points, so that one is given as written too.
 export function readTargets(tool: string, input: Record<string, unknown>, cwd: string): string[] | null {
-  const root = cwd.replace(/\/+$/, '')
+  // Windows (a project at `C:\…`): its paths taken with `/` between names,
+  // the drive as the first name, and compared without case, as the file
+  // system does. A path with no drive (`\x`, `C:x`, `\\server\share`) asks.
+  const win = isWinPath(cwd)
+  const slashed = (p: string) => (win ? p.replace(/\\/g, '/') : p)
+  const root = slashed(cwd).replace(/\/+$/, '')
   const named = (p: unknown): p is string => typeof p === 'string' && p.length > 0
+  const absolute = (p: string) => (win ? /^[A-Za-z]:\//.test(p) : p.startsWith('/'))
   // A path's names as written, absolute: a pattern's up to its first wildcard.
   const names = (p: string, from: string, pattern: boolean): string[] | null => {
-    const all = (p.startsWith('/') ? p : `${from}/${p}`).split('/').filter(part => part && part !== '.')
+    if (win && (p.startsWith('/') || /^[A-Za-z]:(?!\/)/.test(p))) return null
+    const all = (absolute(p) ? p : `${from}/${p}`).split('/').filter(part => part && part !== '.')
     const first = pattern ? all.findIndex(part => /[*?[{]/.test(part)) : -1
     if (first < 0) return all
     return all.slice(first).some(part => part.includes('..')) ? null : all.slice(0, first)
@@ -26,21 +33,23 @@ export function readTargets(tool: string, input: Record<string, unknown>, cwd: s
       if (part === '..') parts.pop()
       else parts.push(part)
     }
-    return `/${parts.join('/')}`
+    return win ? parts.join('/') : `/${parts.join('/')}`
   }
-  const inside = (full: string) => full === root || full.startsWith(`${root}/`)
+  const fold = (p: string) => (win ? p.toLowerCase() : p)
+  const inside = (full: string) => fold(full) === fold(root) || fold(full).startsWith(`${fold(root)}/`)
   const given: { path: string; from: string; pattern: boolean }[] = [input.file_path, input.notebook_path, input.path]
     .filter(named)
     .map(path => ({ path, from: root, pattern: false }))
   if (tool === 'Glob' && named(input.pattern))
-    given.push({ path: input.pattern, from: named(input.path) ? lexical(names(input.path, root, false)!) : root, pattern: true })
+    given.push({ path: input.pattern, from: named(input.path) ? lexical(names(slashed(input.path), root, false) ?? []) : root, pattern: true })
   const out: string[] = []
-  for (const { path, from, pattern } of given) {
-    if (path.startsWith('~') || path.includes('\n')) return null
+  for (const { path: written, from, pattern } of given) {
+    if (written.startsWith('~') || written.includes('\n')) return null
+    const path = slashed(written)
     const list = names(path, from, pattern)
     if (!list || !inside(lexical(list))) return null
     out.push(lexical(list))
-    if (list.includes('..')) out.push(`/${list.join('/')}`)
+    if (list.includes('..')) out.push(win ? list.join('/') : `/${list.join('/')}`)
   }
   return out
 }
@@ -52,6 +61,12 @@ export const readsInside = (tool: string, input: Record<string, unknown>, cwd: s
 
 // Whether every real path (links followed) is the project's real folder or in it.
 export const realInside = (root: string, paths: readonly string[]): boolean => {
-  const top = root.replace(/\/+$/, '')
-  return paths.every(p => p === top || p.startsWith(`${top}/`) || (top === '' && p.startsWith('/')))
+  // On Windows realpath answers `C:/…` (or `C:\…`): compared with `/` and without case.
+  const win = isWinPath(root)
+  const norm = (p: string) => (win ? p.replace(/\\/g, '/').toLowerCase() : p)
+  const top = norm(root).replace(/\/+$/, '')
+  return paths.map(norm).every(p => p === top || p.startsWith(`${top}/`) || (top === '' && p.startsWith('/')))
 }
+
+// A Windows path with its drive: `C:\…` or `C:/…`.
+export const isWinPath = (p: string): boolean => /^[A-Za-z]:[\\/]/.test(p)
